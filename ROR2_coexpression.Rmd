@@ -1,0 +1,213 @@
+---
+title: "ROR2_coexpression"
+author: "Marion Hardy"
+date: "02/03/2023"
+output: 
+  html_document:
+    toc: true 
+    theme: spacelab 
+    highlight: monochrome
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(message = FALSE, cache = T, echo = FALSE, warning = F, cache.lazy = F)
+knitr::opts_chunk$set(fig.width=12, fig.height=8) 
+
+library(tidyverse)
+library(Seurat)
+library(patchwork)
+library(ggpubr)
+
+```
+
+
+```{r, setup data, include = F}
+
+seurat_all <-  read_rds(file = "./data_output/GSE144236/norm_log_scale/seurat_all_processed.rds")
+seurat_IRF1_ROR2 = subset(seurat_all, subset = ROR2>0&IRF1>0)
+seurat_STAT1_ROR2 = subset(seurat_all, subset = ROR2>0&STAT1>0)
+seurat_STAT3_ROR2 = subset(seurat_all, subset = ROR2>0&STAT3>0)
+
+```
+
+## Analyzing all cells
+
+```{r}
+
+# IRF1
+data = 
+  data.frame(cluster = seurat_all$attr_gr_clusters,
+             patient = seurat_all$patient,
+             condition = seurat_all$condition,
+             ROR2 = FetchData(seurat_all,"ROR2"),
+             IRF1 = FetchData(seurat_all,"IRF1"))
+
+p1=
+data %>% 
+  filter(condition == "Tumor") %>% 
+  ggplot(aes(x = IRF1 , y = ROR2)) +
+  geom_point(size=1) +
+  stat_cor(method = "pearson", label.x.npc = "left") +
+  theme_pubr()+
+  labs_pubr()+
+  facet_wrap(.~cluster)
+
+# STAT1 
+
+data = 
+  data.frame(cluster = seurat_all$attr_gr_clusters,
+             patient = seurat_all$patient,
+             condition = seurat_all$condition,
+             ROR2 = FetchData(seurat_all,"ROR2"),
+             IRF1 = FetchData(seurat_all,"STAT1"))
+p2=
+data %>% 
+  filter(condition == "Tumor") %>% 
+  ggplot(aes(x = STAT1 , y = ROR2)) +
+  geom_point(size=1) +
+  stat_cor(method = "pearson", label.x.npc = "left") +
+  theme_pubr()+
+  labs_pubr()+
+  facet_wrap(.~cluster)
+
+
+# STAT3 
+
+data = 
+  data.frame(cluster = seurat_all$attr_gr_clusters,
+             patient = seurat_all$patient,
+             condition = seurat_all$condition,
+             ROR2 = FetchData(seurat_all,"ROR2"),
+             IRF1 = FetchData(seurat_all,"STAT3"))
+p3=
+data %>% 
+  filter(condition == "Tumor") %>% 
+  ggplot(aes(x = STAT3 , y = ROR2)) +
+  geom_point(size=1) +
+  stat_cor(method = "pearson", label.x.npc = "left") +
+  theme_pubr()+
+  labs_pubr()+
+  facet_wrap(.~cluster)
+
+
+p1
+
+p2
+
+p3
+
+```
+
+## Analyzing the coexpressing cells only
+
+Is the ROR2 expression level correlated to the target gene expression level?
+
+
+```{r}
+
+
+data = 
+  data.frame(cluster = seurat_IRF1_ROR2$attr_gr_clusters,
+             patient = seurat_IRF1_ROR2$patient,
+             condition = seurat_IRF1_ROR2$condition,
+             ROR2 = FetchData(seurat_IRF1_ROR2,"ROR2"),
+             IRF1 = FetchData(seurat_IRF1_ROR2,"IRF1"))
+
+p4=
+data %>% 
+  filter(condition == "Tumor") %>% 
+  ggplot(aes(x = IRF1 , y = ROR2, label = cluster)) +
+  geom_point(size=1) +
+  stat_cor(method = "pearson", label.x.npc = "left") +
+  theme_pubr()+
+  labs_pubr()+
+  facet_wrap(.~cluster)
+
+
+data = 
+  data.frame(cluster = seurat_STAT1_ROR2$attr_gr_clusters,
+             patient = seurat_STAT1_ROR2$patient,
+             condition = seurat_STAT1_ROR2$condition,
+             ROR2 = FetchData(seurat_STAT1_ROR2,"ROR2"),
+             IRF1 = FetchData(seurat_STAT1_ROR2,"STAT1"))
+
+p5=
+data %>% 
+  filter(condition == "Tumor") %>% 
+  ggplot(aes(x = STAT1 , y = ROR2, label = cluster)) +
+  geom_point(size=1) +
+  stat_cor(method = "pearson", label.x.npc = "left") +
+  theme_pubr()+
+  labs_pubr()+
+  facet_wrap(.~cluster)
+
+data = 
+  data.frame(cluster = seurat_STAT3_ROR2$attr_gr_clusters,
+             patient = seurat_STAT3_ROR2$patient,
+             condition = seurat_STAT3_ROR2$condition,
+             ROR2 = FetchData(seurat_STAT3_ROR2,"ROR2"),
+             IRF1 = FetchData(seurat_STAT3_ROR2,"STAT3"))
+
+p6=
+data %>% 
+  filter(condition == "Tumor") %>% 
+  ggplot(aes(x = STAT3, y = ROR2, label = cluster)) +
+  geom_point(size=1) +
+  stat_cor(method = "pearson", label.x.npc = "left") +
+  theme_pubr()+
+  labs_pubr()+
+  facet_wrap(.~cluster)
+
+p4
+p5
+p6
+
+```
+
+
+## Test using fcoex for analysis
+
+```{r}
+
+library(EGAD)
+
+exprs = spt@assays$RNA@scale.data
+net = build_coexp_network(exprs, genes)
+save(net, file="coexp.scaled.Rdata")
+
+exprs = as.matrix(spt@assays$RNA@data)
+net = build_coexp_network(exprs, genes )
+save(net, file="coexp.norm.Rdata")
+
+exprs = calc_cpm( as.matrix(pbmc@assays$RNA@counts))
+net = build_coexp_network(exprs, genes )
+save(net, file="coexp.cpm.Rdata")
+
+exprs = as.matrix(pbmc@assays$RNA@counts)
+net = build_coexp_network(exprs, genes )
+save(net, file="coexp.raw.Rdata")
+
+
+
+```
+
+```{r}
+
+sessionInfo()
+
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
