@@ -1,0 +1,1141 @@
+---
+title: "GSEA_analysis"
+author: "Marion Hardy"
+date: "23/02/2023"
+output: 
+  html_document:
+    toc: true 
+    theme: spacelab 
+    highlight: monochrome
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(message = FALSE, cache = T, echo = FALSE, warning = F, cache.lazy = F)
+knitr::opts_chunk$set(fig.width=12, fig.height=8) 
+
+library(tidyverse)
+library(Seurat)
+library(org.Hs.eg.db)
+library(clusterProfiler)
+library(enrichplot)
+library(msigdbr)
+library(pathview)
+library(patchwork)
+library(ggpubr)
+library(readxl)
+library(png)
+```
+
+
+```{r setup data, include = F}
+
+knitr::opts_chunk$set(message = FALSE, cache = TRUE, echo = FALSE, warning = F, cache.lazy = F)
+
+seurat_all <-  read_rds(file = "./data_output/GSE144236/norm_log_scale/seurat_all_processed.rds")
+
+seurat_all$orig.ident = factor(seurat_all$orig.ident, levels = c("P3","P5","P8","P1","P2","P4",
+                               "P6","P7","P9","P10"))
+
+spt = subset(seurat_all, subset = condition == "Tumor")
+
+sptROR2 <-  subset(spt, subset = ROR2>0 & condition == "Tumor")
+sROR2 <-  subset(seurat_all, subset = ROR2>0)
+
+seurat_all$patient = factor(seurat_all$patient, levels =
+                          c("P3_Normal","P5_Normal","P8_Normal","P1_Normal","P2_Normal",
+                            "P4_Normal","P6_Normal","P7_Normal","P9_Normal",
+                            "P10_Normal","P3_Tumor","P5_Tumor",
+                               "P8_Tumor","P1_Tumor","P2_Tumor","P4_Tumor",
+                               "P6_Tumor","P7_Tumor","P9_Tumor","P10_Tumor"))
+
+
+```
+
+## Introduction
+
+Data provided by:
+
+Ji AL, Rubin AJ, Thrane K, Jiang S et al. Multimodal Analysis of Composition and Spatial Architecture in Human Squamous Cell Carcinoma. Cell 2020 Jul 23;182(2):497-514.e22. PMID: 32579974
+
+10 patient-origin scRNAseq samples of healthy and skin squamous cell carcinoma (GSE144236)
+
+We are comparing patient tumors based on whether or not they expressed ROR2 in their epithelial cells. P3, P5 and P8 tumoral epithelial cells do not express ROR2 or have less than two cells expressing ROR2. All enrichment analyses shown are comparing P3+P5+P8 cell types to P1-2,4,6-7,9-10 cell types.
+
+## Summary statistics
+
+### Genomic data : cBioportal (TCGA database)
+
+ROR2 in skin squamous cell carcinoma, 9% of patients show missense
+mutations for ROR2. 151 samples from 3 studies, 75% males 83 missing
+data for survival, 35 living, 33 dead.
+
+![Frequency of ROR2 alteration in
+sSCC](images/frequency_of_alteration_of_ROR2_in_cancer.svg){width="1200"}
+ROR2 gene is altered in 9% of samples. Alteration is "missense mutation"
+of unknown significance.
+
+![Mutation count in ROR2 altered vs unaltered
+samples](images/clinical_plot.svg){width="300"} ![Hereditary disorder
+occurence in ROR2 altered vs unaltered
+samples](images/clinical_plot1.svg){width="300"}
+
+Mutation count: total number of mutations per sample TMB: tumor
+mutational burden, calculated as mutations per megabase of sequenced DNA
+
+Hereditary disorder: number of samples per hereditary disorder
+
+RDEB: Recessive Dystrophic Epidermolysis Bullosa XP: Xeroderma
+pigmentosum
+
+-   RDEB (25 samples) are only found in the unaltered ROR2 patients
+
+-   XP (1 sample) was found in the altered ROR2 patient(s)
+
+-   Test stat is comparing altered vs unaltered
+
+```{r, Tables}
+
+t = read_tsv("./images/table.tsv")
+t %>% 
+  head(10) %>% 
+  knitr::kable()
+
+```
+
+![*Survival plot*](images/survival_plot.svg){width="800"}
+
+11 patients with ROR2 alterations (100% missense mutation), only 4 have
+survival data 111 unaltered patients, only 34 with survival data.
+LogRank Pval = 0.847
+
+![*ROR2 mutations observed in the samples*](images/ROR2_lollipop.svg)
+
+### Patient scRNAseq data: GSE144236
+
+Data provided by:
+
+Ji AL, Rubin AJ, Thrane K, Jiang S et al. Multimodal Analysis of
+Composition and Spatial Architecture in Human Squamous Cell Carcinoma.
+Cell 2020 Jul 23;182(2):497-514.e22. PMID: 32579974
+
+10 patient-origin scRNAseq samples of healthy and skin squamous cell
+carcinoma (GSE144236)
+
+#### Cell type frequency per patient (tumoral sample)
+
+Absolute values (number of cells in each specific cluster per patient)
+
+```{r General statistics levels}
+
+a = table(spt$attr_gr_clusters, spt$orig.ident) 
+  
+a %>% 
+  knitr::kable()
+
+```
+
+Composition of each patient's tumor in % of clusters represented
+
+```{r }
+
+vec = colSums(a)
+vec = vec[vec!=0]
+
+percent = round(sweep(a,2,vec, '/')*100,2)
+
+percent %>% 
+  knitr::kable()
+
+percent = as.data.frame(percent)
+
+```
+
+Boxplot of celltype tumor composition per patient, with ROR2 expression
+levels
+
+ROR2+ patients express ROR2 in their epithelial cells ROR2- patients do
+not have any tumoral epithelial cells expressing ROR2
+
+```{r General statistics levels 2, fig.dim = c(9, 6)}
+
+sptROR2pos = subset(sptROR2, subset = ROR2 > 0)
+
+plot = VlnPlot(object = sptROR2pos, features = "ROR2", group.by = "orig.ident",
+             split.by = "attr_gr_clusters")
+
+
+data1 = as.data.frame(plot$data)
+
+p = 
+data1 %>% 
+  group_by(ident, split) %>% 
+  select(ROR2,ident, split, ROR2) %>% 
+  summarize(mean(ROR2))
+
+
+percent = full_join(percent, p, by = c("Var1"="split", "Var2"= "ident"))
+colnames(percent)[4] = "AvgExpr"
+
+percent$exprROR2 <- ifelse(percent$Var2 %in% 
+                                          c("P3","P5","P8"),"ROR2-", "ROR2+")
+
+percent$AvgExpr[is.na(percent$AvgExpr)] = 0
+
+# _Normal is still in the spt data because seurat_all factor(P3, P5, P8)
+# Then they are not dropped when subsetting
+
+
+percent %>% 
+  ggplot(aes(x = Var1, y = Freq, 
+             fill = exprROR2, label = Var2))+
+  geom_boxplot(alpha = 0.5)+
+  geom_point(position = position_dodge(width=0.75),
+             size = 2, aes(colour = AvgExpr))+
+  scale_color_gradient2(low="blue", mid="blue",
+                     high="red", space ="Lab" )+
+  geom_text(hjust=1.5, vjust=1.5,position = position_dodge(width=0.75),
+            size = 3.1)+
+  ylim(0,100)+
+  theme_pubr(x.text.angle = 70)+
+  stat_compare_means(aes(label = ..p.signif..), 
+                        label.y = 95)
+
+
+```
+
+### Gene expression levels
+
+We are interested in the expression of ROR2 in epithelial cells:
+
+```{r Gene expression levels 3}
+
+sROR2_e <- subset(sROR2, paper_clusters=="Epithelial cells")
+
+sROR2_e$orig.ident = factor(sROR2_e$orig.ident, levels = c("P3","P5","P8","P1","P2","P4",
+                               "P6","P7","P9","P10"))
+
+p <- VlnPlot(object = sROR2_e, features = "ROR2", split.by = "condition",
+        group.by= "patient",fill.by = "condition")+
+  geom_boxplot(width=0.3, fill="white")
+
+print(p)
+
+boxp <- as.data.frame(p$data)
+
+boxp %>% 
+  ggplot(aes(x=ident, y=ROR2, fill=split)) +
+  geom_boxplot()+ 
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))+
+  stat_summary(fun = median, geom = "text", col = "black",  size = 3.5, 
+               vjust = 1.5, aes(label = paste(round(..y.., digits = 2))))
+
+```
+
+We can split cells by KRT type expression and check ROR2 expression
+
+```{r Gene expression 4, fig.height = 8, fig.width = 24}
+
+spt_e = subset(seurat_all, paper_clusters == "Epithelial cells" &
+                     condition == "Tumor")
+
+spt_e@meta.data$rtpatient <- spt_e@meta.data$patient
+
+# All cells express KRT14 the highest, I'm excluding it from the list
+
+target = c("KRT1","KRT2","KRT3","KRT4","KRT5","KRT6","KRT6A","KRT6B","KRT6C",
+           "KRT7","KRT8","KRT9","KRT10","KRT11","KRT12","KRT13", "KRT14","KRT15",
+           "KRT16","KRT17","KRT18","KRT19","KRT20","KRT21","KRT22","KRT23","KRT24",
+           "KRT25","KRT26","KRT27","KRT28","KRT29","KRT30","KRT31","KRT32","KRT33",
+           "KRT34","KRT35","KRT36","KRT37","KRT38")
+
+# KRT38 and above are not present
+
+temp = FetchData(spt_e, vars = c(target, "orig.ident", "exprROR2"))
+data = temp
+
+colnames(data)
+
+data_l =
+data %>% 
+  pivot_longer(names_to = "KRT", values_to = "AvgExpr", c(1:31))
+
+data_l$KRT = factor(data_l$KRT, levels = c("KRT1","KRT2","KRT3","KRT4","KRT5","KRT6","KRT6A","KRT6B","KRT6C",
+           "KRT7","KRT8","KRT9","KRT10","KRT11","KRT12","KRT13", "KRT14","KRT15",
+           "KRT16","KRT17","KRT18","KRT19","KRT20","KRT21","KRT22","KRT23","KRT24",
+           "KRT25","KRT26","KRT27","KRT28","KRT29","KRT30","KRT31","KRT32","KRT33",
+           "KRT34","KRT35","KRT36","KRT37","KRT38"))
+
+data_l %>% 
+  ggplot(aes(x = KRT, y = AvgExpr, fill = exprROR2))+
+  geom_boxplot(position = position_dodge())+
+  labs(title = "KRT subtype expression in epithelial cells")+
+  stat_compare_means(aes(label = ..p.signif..), 
+                        label.y = 7.5)+ 
+  theme(axis.text.x = element_text(angle = 45, vjust = 0.5, hjust=1))+
+  xlab(" ")
+
+```
+
+
+
+```{r}
+
+target = c("KRT1","KRT2","KRT3","KRT4","KRT5","KRT6","KRT6A","KRT6B","KRT6C",
+           "KRT7","KRT8","KRT9","KRT10","KRT11","KRT12","KRT13", "KRT14","KRT15",
+           "KRT16","KRT17","KRT18","KRT19","KRT20","KRT21","KRT22","KRT23","KRT24")
+
+
+temp1 = colnames(temp)[apply(temp,1,which.max)]
+temp$KRT = temp1
+temp = temp %>% 
+  select(KRT)
+
+table(temp$KRT)
+
+spt_e <- AddMetaData(
+  object = spt_e,
+  metadata = temp,
+  col.name = 'KRT_type')
+
+
+DotPlot(spt_e, features = target, group.by = "KRT_type") +
+  scale_colour_gradient2(low = "blue", mid = "lightgrey", high = "firebrick3")+
+  labs(title = "Epithelial cells", subtitle = "ROR2+")# Epithelial ROR2 ordered
+
+
+VlnPlot(object = sptROR2_e, features = "ROR2",
+        group.by= "KRT_type",fill.by = "condition")+
+  geom_boxplot(width=0.3, fill="white")
+
+
+```
+
+
+
+#### Per patient
+##### T cells
+
+We are interested in multiple gene expression levels in tumoral T cells:
+
+-   PD1
+
+-   (IL2) (it's overall lowly expressed)
+
+-   GZMB
+
+-   IFNG
+
+```{r Gene expression levels 5}
+
+s_tcells <- subset(spt, paper_clusters=="T cells")
+
+p1 <- VlnPlot(object = s_tcells, features = c("PDCD1","IL2","GZMB","IFNG"), 
+             split.by = "condition",group.by= "orig.ident",fill.by = "ident")+
+  geom_boxplot(width=0.3, fill="white")
+
+print(p1)
+
+```
+
+```{r Gene expression levels 6}
+
+
+p4 <- VlnPlot(object = s_tcells, features = "PDCD1", 
+             split.by = "condition", group.by= "orig.ident", fill.by = "orig.ident", pt.size = 1)+
+  geom_boxplot(width=0.5, position = position_dodge(width = 0.9), alpha = 0.5)
+
+
+
+p5 <- VlnPlot(object = s_tcells, features = "IL2", 
+             split.by = "condition", group.by= "orig.ident", fill.by = "orig.ident", pt.size = 1)+
+  geom_boxplot(width=0.5, position = position_dodge(width = 0.9), alpha = 0.5)
+
+
+
+p6 <- VlnPlot(object = s_tcells, features = "GZMB", 
+             split.by = "condition", group.by= "orig.ident", fill.by = "orig.ident", pt.size = 1)+
+  geom_boxplot(width=0.5, position = position_dodge(width = 0.9), alpha = 0.5)
+
+
+
+p7 <- VlnPlot(object = s_tcells, features = "IFNG", 
+             split.by = "condition", group.by= "orig.ident", fill.by = "orig.ident", pt.size = 1)+
+  geom_boxplot(width=0.5, position = position_dodge(width = 0.9), alpha = 0.5)
+
+p4
+p5
+p6
+p7
+
+```
+
+##### Epithelial cells
+
+```{r}
+
+
+s_epith <- subset(spt, paper_clusters=="Epithelial cells")
+
+p8 <- VlnPlot(object = s_epith, features = c("CD274"), 
+             split.by = "condition",group.by= "orig.ident",fill.by = "ident")+
+  geom_boxplot(width=0.3, fill="white")
+
+p8
+
+
+```
+
+
+#### Per epithelial ROR2neg ROR2pos patients
+##### T cells
+
+```{r}
+
+comp = list(c("ROR2-","ROR2+"))
+
+p4 <- VlnPlot(object = s_tcells, features = "PDCD1", 
+             split.by = "condition", group.by= "exprROR2", fill.by = "orig.ident", pt.size = 1)+
+  geom_boxplot(width=0.5, position = position_dodge(width = 0.9), alpha = 0.5)+
+  stat_summary(fun = median, geom = "text", col = "black",  size = 3.5, 
+               vjust = 1.5, aes(label = paste(round(..y.., digits = 2))))+
+  ylim(0,5)+
+  stat_compare_means(comparisons = comp, aes(label = "p.value"), 
+                        label.y = 4.5)
+
+p5 <- VlnPlot(object = s_tcells, features = "IL2", 
+             split.by = "condition", group.by= "exprROR2", fill.by = "orig.ident", pt.size = 1)+
+  geom_boxplot(width=0.5, position = position_dodge(width = 0.9), alpha = 0.5)+
+  stat_summary(fun = median, geom = "text", col = "black",  size = 3.5, 
+               vjust = 1.5, aes(label = paste(round(..y.., digits = 2))))+
+  stat_compare_means(aes(label = ..p.signif..), 
+                        label.y = 95)+
+  ylim(0,4)+
+  stat_compare_means(comparisons = comp, aes(label = "p.value"), 
+                        label.y = 3.5)
+
+
+
+p6 <- VlnPlot(object = s_tcells, features = "GZMB", 
+             split.by = "condition", group.by= "exprROR2", fill.by = "orig.ident", pt.size = 1)+
+  geom_boxplot(width=0.5, position = position_dodge(width = 0.9), alpha = 0.5)+
+  stat_summary(fun = median, geom = "text", col = "black",  size = 3.5, 
+               vjust = 1.5, aes(label = paste(round(..y.., digits = 2))))+
+  stat_compare_means(aes(label = ..p.signif..), 
+                        label.y = 95)+
+  ylim(0,8)+
+  stat_compare_means(comparisons = comp, aes(label = "p.value"), 
+                        label.y = 7.5)
+
+
+
+p7 <- VlnPlot(object = s_tcells, features = "IFNG", 
+             split.by = "condition", group.by= "exprROR2", fill.by = "orig.ident", pt.size = 1)+
+  geom_boxplot(width=0.5, position = position_dodge(width = 0.9), alpha = 0.5)+
+  stat_summary(fun = median, geom = "text", col = "black",  size = 3.5, 
+               vjust = 1.5, aes(label = paste(round(..y.., digits = 2))))+
+  stat_compare_means(aes(label = ..p.signif..), 
+                        label.y = 95)+
+  ylim(0,9)+
+  stat_compare_means(comparisons = comp, aes(label = "p.value"), 
+                        label.y = 8.5)
+
+p4
+p5
+p6
+p7
+
+```
+
+##### Epithelial cells
+
+```{r}
+
+
+p8 <- VlnPlot(object = s_epith, features = c("CD274"), 
+             split.by = "condition",group.by= "exprROR2",fill.by = "ident")+
+  geom_boxplot(width=0.3, fill="white")+
+  stat_summary(fun = median, geom = "text", col = "black",  size = 3.5, 
+               vjust = 1.5, aes(label = paste(round(..y.., digits = 2))))+
+  stat_compare_means(aes(label = ..p.signif..), 
+                        label.y = 95)+
+  ylim(0,2)+
+  stat_compare_means(comparisons = comp, aes(label = "p.value"), 
+                        label.y = 1.75)
+
+p8
+
+```
+
+
+### Correlation analysis for gene co-expression
+
+In all cells:
+
+```{r Correlation analysis}
+
+seurat_CD274_ROR2 = subset(seurat_all, subset = ROR2>0&CD274>0)
+# seurat_PDCD1_ROR2 = subset(seurat_all, subset = ROR2>0&PDCD1>0) # empty
+
+data = 
+  data.frame(cluster = seurat_all$attr_gr_clusters,
+             patient = seurat_all$patient,
+             condition = seurat_all$condition,
+             ROR2 = FetchData(seurat_all,"ROR2"),
+             CD274 = FetchData(seurat_all,"CD274"))
+
+p11= 
+data %>% 
+  filter(condition == "Tumor") %>% 
+  ggplot(aes(x = CD274 , y = ROR2)) +
+  geom_point(size=1) +
+  stat_cor(method = "pearson", label.x.npc = "left") +
+  theme_pubr()+
+  labs_pubr()
+
+
+## ROR2 PDL1
+# 68 cells co express ROR2 and PDL1
+
+data = 
+  data.frame(cluster = seurat_CD274_ROR2$attr_gr_clusters,
+             patient = seurat_CD274_ROR2$patient,
+             condition = seurat_CD274_ROR2$condition,
+           ROR2 = FetchData(seurat_CD274_ROR2,"ROR2"),
+           CD274 = FetchData(seurat_CD274_ROR2,"CD274"))
+
+p12 =
+data %>% 
+  filter(condition == "Tumor") %>% 
+  ggplot(aes(x = CD274 , y = ROR2)) +
+  geom_point(size=1) +
+  stat_cor(method = "pearson", label.x.npc = "left") +
+  theme_pubr()+
+  labs_pubr()
+
+
+## ROR2 PDCD1
+# no cells are co-expressing ROR2 and PD1
+
+data = 
+  data.frame(cluster = seurat_all$attr_gr_clusters,
+             patient = seurat_all$patient,
+             condition = seurat_all$condition,
+             ROR2 = FetchData(seurat_all,"ROR2"),
+             CD274 = FetchData(seurat_all,"PDCD1"))
+
+p13= 
+data %>% 
+  filter(condition == "Tumor") %>% 
+  ggplot(aes(x = PDCD1 , y = ROR2)) +
+  geom_point(size=1) +
+  stat_cor(method = "pearson", label.x.npc = "left") +
+  theme_pubr()+
+  labs_pubr()
+
+p11+p12+p13
+
+
+```
+
+
+```{r Correlation analysis 1}
+
+## ROR2 HLA class I
+
+data = 
+  data.frame(cluster = seurat_all$attr_gr_clusters,
+             patient = seurat_all$patient,
+             condition = seurat_all$condition,
+             ROR2 = FetchData(seurat_all,"ROR2"),
+             CD274 = FetchData(seurat_all,"HLA-A"))
+
+
+p8 =
+data %>% 
+  filter(condition == "Tumor") %>% 
+  ggplot(aes(x = HLA.A , y = ROR2)) +
+  geom_point(size=1) +
+  stat_cor(method = "pearson", label.x.npc = "left") +
+  theme_pubr()+
+  labs_pubr()
+
+
+data = 
+  data.frame(cluster = seurat_all$attr_gr_clusters,
+             patient = seurat_all$patient,
+             condition = seurat_all$condition,
+             ROR2 = FetchData(seurat_all,"ROR2"),
+             CD274 = FetchData(seurat_all,"HLA-B"))
+
+
+p9 =
+data %>% 
+  filter(condition == "Tumor") %>% 
+  ggplot(aes(x = HLA.B , y = ROR2)) +
+  geom_point(size=1) +
+  stat_cor(method = "pearson", label.x.npc = "left") +
+  theme_pubr()+
+  labs_pubr()
+
+
+
+data = 
+  data.frame(cluster = seurat_all$attr_gr_clusters,
+             patient = seurat_all$patient,
+             condition = seurat_all$condition,
+             ROR2 = FetchData(seurat_all,"ROR2"),
+             CD274 = FetchData(seurat_all,"HLA-C"))
+
+
+p10 =
+data %>% 
+  filter(condition == "Tumor") %>% 
+  ggplot(aes(x = HLA.C , y = ROR2)) +
+  geom_point(size=1) +
+  stat_cor(method = "pearson", label.x.npc = "left") +
+  theme_pubr()+
+  labs_pubr()
+
+
+
+p8+p9+p10
+```
+
+
+## GSEA analysis ROR2- enrichment over ROR2+
+
+### Epithelial cells
+
+```{r }
+
+# MsigDb
+
+hsa_GOBP_sets <- msigdbr(
+  species = "Homo sapiens", 
+  category = "C5",
+  subcategory = "GO:BP") # for reactome collection
+
+hsa_reactome_sets <- msigdbr(
+  species = "Homo sapiens", 
+  category = "C2",
+  subcategory = "CP:REACTOME") # for reactome collection
+
+hsa_kegg_sets <- msigdbr(
+  species = "Homo sapiens", 
+  category = "C2",
+  subcategory = "CP:KEGG") # for KEGG collection
+
+hsa_wiki_sets <- msigdbr(
+  species = "Homo sapiens", 
+  category = "C2",
+  subcategory = "CP:WIKIPATHWAYS") # for Wikipathways collection
+
+hsa_wiki_sets <- msigdbr(
+  species = "Homo sapiens", 
+  category = "C2",
+  subcategory = "CP:WIKIPATHWAYS") # for Wikipathways collection
+
+
+
+set.seed(054057) # for reproducibility
+
+```
+
+
+```{r, echo=FALSE}
+
+## GSEA for epithelial cells----------------------------------------------------
+
+# Create the variable to be able to compare cell types per ROR2 expression
+
+spt$celltype.ROR2expr <- paste(spt@meta.data$attr_gr_clusters, spt$exprROR2, sep = "_")
+Idents(spt) = spt$celltype.ROR2expr
+
+# Compare epithelial ROR2- and ROR2+ epithelial cells
+
+cond_diff_epith <- FindMarkers(spt, ident.1 = "Epithelial cells_ROR2-", 
+                              ident.2="Epithelial cells_ROR2+",
+                              min.pct=0.25, logfc.threshold=0)
+
+cond_diff_epith$genes = rownames(cond_diff_epith)
+
+# write_csv(cond_diff_epith,"./data_output/GSE144236/norm_log_scale/spt_markers_diff_per_epithelial.csv")
+
+```
+
+```{r , fig.height = 15, fig.width = 15}
+
+# GO
+
+cond_diff_epith_f = cond_diff_epith %>% 
+  filter(p_val_adj <= 0.05)
+ordered_genes <- cond_diff_epith_f$avg_log2FC
+names(ordered_genes) <- cond_diff_epith_f$genes
+ordered_genes1 <- sort(ordered_genes, decreasing = TRUE)
+
+go_gsea <- GSEA(
+  geneList = ordered_genes1,
+  pvalueCutoff = 0.05,
+  eps = 0,
+  seed = TRUE,
+  pAdjustMethod = "BH",
+  TERM2GENE = dplyr::select(
+    hsa_GOBP_sets,
+    gs_name,
+    gene_symbol
+  ),
+  nPermSimple = 10000)
+
+
+dotplot(go_gsea, showCategory=25, x = "NES") + ggtitle("Dotplot for GSEA all epithelial cells")
+
+go_gsea_tbl <- as_tibble(go_gsea)
+
+go_gsea_tbl %>% 
+  select(1:9) %>% 
+  knitr::kable()
+
+```
+
+
+```{r , fig.height = 15, fig.width = 15}
+
+gsea_results_react <- GSEA(
+  geneList = ordered_genes1,
+  pvalueCutoff = 0.05,
+  eps = 0,
+  seed = TRUE,
+  pAdjustMethod = "BH",
+  TERM2GENE = dplyr::select(
+    hsa_reactome_sets,
+    gs_name,
+    gene_symbol
+  ),
+  nPermSimple = 10000
+)
+
+dotplot(gsea_results_react, x = "NES", showCategory = 30)+ ggtitle("GSEA reactome LFC epithelial cells")
+gsea_results_react_t <- as_tibble(gsea_results_react)
+
+gsea_results_react_t %>%
+  select(1:9) %>%
+  knitr::kable()
+
+
+gsea_results_wiki <- GSEA(
+  geneList = ordered_genes1, 
+  pvalueCutoff = 0.05, 
+  eps = 0, 
+  seed = TRUE,
+  pAdjustMethod = "BH", 
+  TERM2GENE = dplyr::select(
+    hsa_wiki_sets,
+    gs_name,
+    gene_symbol
+  ),
+  nPermSimple = 10000
+)
+
+dotplot(gsea_results_wiki, x = "NES", showCategory = 30)+ ggtitle("GSEA Wikipathway LFC epithelial cells")
+
+gsea_results_wiki_t <- as_tibble(gsea_results_wiki)
+
+gsea_results_wiki_t %>% 
+  select(1:9) %>% 
+  knitr::kable()
+
+```
+
+### Macrophages
+
+```{r}
+# Compare epithelial ROR2- and ROR2+ macrophages cells
+
+cond_diff_macr <- FindMarkers(spt, ident.1 = "Macrophages_ROR2-", 
+                              ident.2="Macrophages_ROR2+",
+                              min.pct=0.25, logfc.threshold=0)
+
+cond_diff_macr$genes = rownames(cond_diff_macr)
+
+# write_csv(cond_diff_epith,"./data_output/GSE144236/norm_log_scale/spt_markers_diff_per_macrophages.csv")
+
+```
+
+```{r, fig.height = 15, fig.width = 15}
+
+# GO
+
+cond_diff_macr_f = cond_diff_macr%>% 
+  filter(p_val_adj <= 0.05)
+ordered_genes <- cond_diff_macr_f$avg_log2FC
+names(ordered_genes) <- cond_diff_macr_f$genes
+ordered_genes2 <- sort(ordered_genes, decreasing = TRUE)
+
+go_gsea <- GSEA(
+  geneList = ordered_genes2,
+  pvalueCutoff = 0.05,
+  eps = 0,
+  seed = TRUE,
+  pAdjustMethod = "BH",
+  TERM2GENE = dplyr::select(
+    hsa_GOBP_sets,
+    gs_name,
+    gene_symbol
+  ),
+  nPermSimple = 10000)
+
+
+dotplot(go_gsea, showCategory=30, x = "NES") + ggtitle("Dotplot for GSEA all macrophages")
+
+go_gsea_tbl <- as_tibble(go_gsea)
+
+go_gsea_tbl %>% 
+  select(1:9) %>% 
+  knitr::kable()
+
+```
+
+```{r}
+
+gsea_results_react <- GSEA(
+  geneList = ordered_genes2, 
+  pvalueCutoff = 0.05, 
+  eps = 0, 
+  seed = TRUE, 
+  pAdjustMethod = "BH",
+  TERM2GENE = dplyr::select(
+    hsa_reactome_sets,
+    gs_name,
+    gene_symbol
+  ),
+  nPermSimple = 10000
+) 
+
+dotplot(gsea_results_react, x = "NES", showCategory = 30)+ ggtitle("GSEA reactome macrophages")
+gsea_results_react <- as_tibble(gsea_results_react)
+
+gsea_results_react %>% 
+  select(1:9) %>% 
+  knitr::kable()
+
+
+gsea_results_kegg <- GSEA(
+  geneList = ordered_genes2,
+  pvalueCutoff = 0.05, 
+  eps = 0,
+  seed = TRUE, 
+  pAdjustMethod = "BH",
+  TERM2GENE = dplyr::select(
+    hsa_kegg_sets,
+    gs_name,
+    gene_symbol
+  ),
+  nPermSimple = 10000
+)
+
+dotplot(gsea_results_kegg, x = "NES", showCategory = 30)+ ggtitle("GSEA KEGG macrophages")
+gsea_results_kegg <- as_tibble(gsea_results_kegg)
+
+gsea_results_kegg %>% 
+  select(1:8) %>% 
+  knitr::kable()
+
+gsea_results_wiki <- GSEA(
+  geneList = ordered_genes2, 
+  pvalueCutoff = 0.05, 
+  eps = 0, 
+  seed = TRUE,
+  pAdjustMethod = "BH", 
+  TERM2GENE = dplyr::select(
+    hsa_wiki_sets,
+    gs_name,
+    gene_symbol
+  ),
+  nPermSimple = 10000
+)
+
+dotplot(gsea_results_wiki, x = "NES", showCategory = 30)+ ggtitle("GSEA Wikipathway macrophages")
+
+gsea_results_wiki <- as_tibble(gsea_results_wiki)
+
+gsea_results_wiki %>% 
+  select(1:8) %>% 
+  knitr::kable()
+
+```
+
+### T cells
+
+```{r, echo=FALSE}
+
+## GSEA for tcells----------------------------------------------------
+
+# Compare tcells ROR2- and ROR2+ tcells
+
+cond_diff_tcells <- FindMarkers(spt, ident.1 = "T cells_ROR2-", 
+                              ident.2="T cells_ROR2+",
+                              min.pct=0.25, logfc.threshold=0)
+
+cond_diff_tcells$genes = rownames(cond_diff_tcells)
+
+# write_csv(cond_diff_tcells,"./data_output/GSE144236/norm_log_scale/spt_markers_diff_per_tcellselial.csv")
+
+```
+
+```{r , fig.height = 15, fig.width = 15}
+
+# GO
+
+cond_diff_tcells_f = cond_diff_tcells %>% 
+  filter(p_val_adj <= 0.05)
+ordered_genes <- cond_diff_tcells_f$avg_log2FC
+names(ordered_genes) <- cond_diff_tcells_f$genes
+ordered_genes3 <- sort(ordered_genes, decreasing = TRUE)
+
+go_gsea <- GSEA(
+  geneList = ordered_genes3,
+  pvalueCutoff = 0.05,
+  eps = 0,
+  seed = TRUE,
+  pAdjustMethod = "BH",
+  TERM2GENE = dplyr::select(
+    hsa_GOBP_sets,
+    gs_name,
+    gene_symbol
+  ),
+  nPermSimple = 10000)
+
+dotplot(go_gsea, showCategory=30, x = "NES") + ggtitle("Dotplot for GSEA all T cells")
+
+go_gsea_tbl <- as_tibble(go_gsea)
+
+go_gsea_tbl %>% 
+  select(1:9) %>% 
+  knitr::kable()
+
+```
+
+```{r, fig.height = 15, fig.width = 15}
+
+gsea_results_react <- GSEA(
+  geneList = ordered_genes3,
+  pvalueCutoff = 0.05,
+  eps = 0,
+  seed = TRUE,
+  pAdjustMethod = "BH",
+  TERM2GENE = dplyr::select(
+    hsa_reactome_sets,
+    gs_name,
+    gene_symbol
+  ),
+  nPermSimple = 10000
+)
+
+dotplot(gsea_results_react, x = "NES", showCategory = 30)+ ggtitle("GSEA reactome LFC T cells")
+gsea_results_react_t <- as_tibble(gsea_results_react)
+
+gsea_results_react_t %>%
+  select(1:9) %>%
+  knitr::kable()
+
+
+gsea_results_kegg <- GSEA(
+  geneList = ordered_genes3,
+  pvalueCutoff = 0.05,
+  eps = 0,
+  seed = TRUE,
+  pAdjustMethod = "BH",
+  TERM2GENE = dplyr::select(
+    hsa_kegg_sets,
+    gs_name,
+    gene_symbol
+  ),
+  nPermSimple = 10000
+)
+
+dotplot(gsea_results_kegg, x = "NES", showCategory = 30)+ ggtitle("GSEA KEGG T cells")
+gsea_results_kegg_t <- as_tibble(gsea_results_kegg)
+
+gsea_results_kegg_t %>%
+  select(1:9) %>%
+  knitr::kable()
+
+gsea_results_wiki <- GSEA(
+  geneList = ordered_genes3, 
+  pvalueCutoff = 0.05, 
+  eps = 0, 
+  seed = TRUE,
+  pAdjustMethod = "BH", 
+  TERM2GENE = dplyr::select(
+    hsa_wiki_sets,
+    gs_name,
+    gene_symbol
+  ),
+  nPermSimple = 10000
+)
+
+dotplot(gsea_results_wiki, x = "NES", showCategory = 30)+ ggtitle("GSEA Wikipathway LFC T cells")
+
+gsea_results_wiki_t <- as_tibble(gsea_results_wiki)
+
+gsea_results_wiki_t %>% 
+  select(1:9) %>% 
+  knitr::kable()
+
+```
+
+We are comparing patient tumors based on whether or not they expressed ROR2.
+
+
+## GSEA analysis comparing patients ROR2- epithelial or ROR2+ epithelial
+
+### Epithelial cells
+
+```{r, echo=FALSE}
+
+## GSEA for epithelial cells----------------------------------------------------
+
+spt_e = subset(spt, subset = attr_gr_clusters == "Epithelial cells")
+Idents(spt_e) = "exprROR2"
+
+# Compare epithelial ROR2- and ROR2+ epithelial cells
+
+cond_diff_epith <- FindMarkers(spt_e, ident.1 = "ROR2-", 
+                              ident.2="ROR2+",
+                              min.pct=0.25, logfc.threshold=0)
+
+cond_diff_epith$genes = rownames(cond_diff_epith)
+
+# write_csv(cond_diff_epith,"./data_output/GSE144236/norm_log_scale/spt_markers_diff_per_epithelial.csv")
+
+```
+
+```{r}
+
+# GO
+
+cond_diff_epith_f = cond_diff_epith %>% 
+  filter(p_val_adj <= 0.05)
+ordered_genes <- cond_diff_epith_f$avg_log2FC
+names(ordered_genes) <- cond_diff_epith_f$genes
+ordered_genes4 <- sort(ordered_genes, decreasing = TRUE)
+
+go_gsea <- GSEA(
+  geneList = ordered_genes4,
+  pvalueCutoff = 0.05,
+  eps = 0,
+  seed = TRUE,
+  pAdjustMethod = "BH",
+  TERM2GENE = dplyr::select(
+    hsa_GOBP_sets,
+    gs_name,
+    gene_symbol
+  ),
+  nPermSimple = 10000)
+
+dotplot(go_gsea, showCategory=25, x = "NES") + ggtitle("Dotplot for GSEA all epithelial cells")
+
+go_gsea_tbl <- as_tibble(go_gsea)
+
+go_gsea_tbl %>% 
+  select(1:9) %>% 
+  knitr::kable()
+
+```
+
+```{r}
+
+gsea_results_react <- GSEA(
+  geneList = ordered_genes4,
+  pvalueCutoff = 0.05,
+  eps = 0,
+  seed = TRUE,
+  pAdjustMethod = "BH",
+  TERM2GENE = dplyr::select(
+    hsa_reactome_sets,
+    gs_name,
+    gene_symbol
+  ),
+  nPermSimple = 10000
+)
+
+dotplot(gsea_results_react, x = "NES", showCategory = 30)+ ggtitle("GSEA reactome LFC epithelial cells")
+gsea_results_react_t <- as_tibble(gsea_results_react)
+
+gsea_results_react_t %>%
+  select(1:9) %>%
+  knitr::kable()
+
+
+gsea_results_wiki <- GSEA(
+  geneList = ordered_genes4, 
+  pvalueCutoff = 0.05, 
+  eps = 0, 
+  seed = TRUE,
+  pAdjustMethod = "BH", 
+  TERM2GENE = dplyr::select(
+    hsa_wiki_sets,
+    gs_name,
+    gene_symbol
+  ),
+  nPermSimple = 10000
+)
+
+dotplot(gsea_results_wiki, x = "NES", showCategory = 30)+ ggtitle("GSEA Wikipathway LFC epithelial cells")
+
+gsea_results_wiki_t <- as_tibble(gsea_results_wiki)
+
+gsea_results_wiki_t %>% 
+  select(1:9) %>% 
+  knitr::kable()
+
+```
+
+## Top varying genes between ROR2+ and ROR2- epithelial cells
+
+```{r , fig.height = 48, fig.width = 12 }
+
+spt_e$celltype.ROR2expr <- paste(spt_e$attr_gr_clusters, spt_e$exprROR2, sep = "_")
+Idents(spt_e) <- "celltype.ROR2expr"
+
+condition_diff_epith <- FindMarkers(spt_e, ident.1 = "Epithelial cells_ROR2-", 
+                                   ident.2="Epithelial cells_ROR2+", 
+                                       min.pct=0.25, logfc.threshold=0)
+
+condition_diff_epith$genes = rownames(condition_diff_epith)
+
+condition_top10 =
+  condition_diff_epith %>% filter(p_val_adj<0.05 & avg_log2FC<=-0.5 |avg_log2FC>=0.5)
+
+target = as.vector(rownames(condition_top10))
+
+plots = FeaturePlot(spt_e, features = target, split.by = "exprROR2", max.cutoff = 3, 
+            cols = c("grey", "red"))
+
+plots
+
+```
+
+```{r , fig.height = 100, fig.width = 60}
+
+plots = VlnPlot(spt_e, features = target, split.by = "exprROR2",
+        fill.by = "exprROR2")
+
+wrap_plots(plots = plots, ncol = 10)
+
+
+```
+
+```{r , fig.height = 100, fig.width = 60}
+
+Idents(spt_e) = "orig.ident"
+
+plots = VlnPlot(spt_e, features = target, split.by = "orig.ident",
+        fill.by = "exprROR2")
+
+wrap_plots(plots = plots, ncol = 10)
+
+
+```
